@@ -2,9 +2,12 @@
 
 import os
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
+import signal
+import traceback
 
 import requests
 import uvicorn
@@ -18,6 +21,8 @@ from .rp_handler import is_generator
 from .rp_job import run_job, run_job_generator
 from .rp_ping import Heartbeat
 from .worker_state import Job, JobsProgress
+from .rp_logger import RunPodLogger
+import asyncio
 
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", None)
 
@@ -98,26 +103,29 @@ This endpoint is invaluable for monitoring the progress of a job and obtaining t
 # ------------------------------ Initializations ----------------------------- #
 job_list = JobsProgress()
 heartbeat = Heartbeat()
+log = RunPodLogger()
 
 
 # ------------------------------- Input Objects ------------------------------ #
-@dataclass
-class Job:
-    """Represents a job."""
+# @dataclass
+# class Job:
+#     """Represents a job."""
 
-    id: str
-    input: Union[dict, list, str, int, float, bool]
+#     id: str
+#     input: Union[dict, list, str, int, float, bool]
+#     status: str = "QUEUED"  # Add status field
 
 
-@dataclass
-class TestJob:
-    """Represents a test job.
-    input can be any type of data.
-    """
+# @dataclass
+# class TestJob:
+#     """Represents a test job.
+#     input can be any type of data.
+#     """
 
-    id: Optional[str] = None
-    input: Optional[Union[dict, list, str, int, float, bool]] = None
-    webhook: Optional[str] = None
+#     id: Optional[str] = None
+#     input: Optional[Union[dict, list, str, int, float, bool]] = None
+#     webhook: Optional[str] = None
+#     status: str = "QUEUED"  # Add status field
 
 
 @dataclass
@@ -231,7 +239,7 @@ class WorkerAPI:
             "/run",
             self._sim_run,
             methods=["POST"],
-            response_model_exclude_none=True,
+            # response_model_exclude_none=True,
             summary="Mimics the behavior of the run endpoint.",
             description=RUN_DESCRIPTION,
             tags=["Submit Job Requests"],
@@ -240,7 +248,7 @@ class WorkerAPI:
             "/runsync",
             self._sim_runsync,
             methods=["POST"],
-            response_model_exclude_none=True,
+            # response_model_exclude_none=True,
             summary="Mimics the behavior of the runsync endpoint.",
             description=RUNSYNC_DESCRIPTION,
             tags=["Synchronously Submit Request & Get Job Results"],
@@ -249,7 +257,7 @@ class WorkerAPI:
             "/stream/{job_id}",
             self._sim_stream,
             methods=["POST"],
-            response_model_exclude_none=True,
+            # response_model_exclude_none=True,
             summary="Mimics the behavior of the stream endpoint.",
             description=STREAM_DESCRIPTION,
             tags=["Check Job Results"],
@@ -258,7 +266,7 @@ class WorkerAPI:
             "/status/{job_id}",
             self._sim_status,
             methods=["POST"],
-            response_model_exclude_none=True,
+            # response_model_exclude_none=True,
             summary="Mimics the behavior of the status endpoint.",
             description=STATUS_DESCRIPTION,
             tags=["Check Job Results"],
@@ -266,6 +274,80 @@ class WorkerAPI:
 
         # Include the APIRouter in the FastAPI application.
         self.rp_app.include_router(api_router)
+
+         # Start background job runner thread
+        self._stop_event = threading.Event()
+        self._job_runner_thread = threading.Thread(
+            target=self._background_job_runner,
+            daemon=True
+        )
+        self._job_runner_thread.start()
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self.stop)
+        signal.signal(signal.SIGINT, self.stop)
+
+    def _background_job_runner(self):
+        """Continuously processes jobs from the queue."""
+        while not self._stop_event.is_set():
+            job = job_list.get_oldest_queued()
+            if job is None:
+                time.sleep(0.1)
+                continue
+
+            log.info(f"WorkerApi1 procesing job {job.getString()}")
+            job.status = "IN_PROGRESS"
+
+            try:
+                log.info(f"WorkerApi procesing job {job.getString()}", job.id)
+                if is_generator(self.config["handler"]):
+                    log.info(f"WorkerApi procesing job as generator", job.id)
+
+                    def run_async_generator(gen):
+                        results = []
+                        async def consume():
+                            async for stream_output in gen:
+                                results.append(stream_output["output"])
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(consume())
+                        loop.close()
+                        return results
+
+                    generator_output = run_job_generator(self.config["handler"], job.getDictCopy())
+                    job_output = {"output": run_async_generator(generator_output)}
+                else:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    log.info(f"WorkerApi procesing job as NON-generator", job.id)
+                    job_output = loop.run_until_complete(run_job(self.config["handler"], job.getDictCopy()))
+                    loop.close()
+
+                if job_output.get("error", None):
+                    job.status = "FAILED"
+                    job.error = job_output.get("error", "Unknown error")
+                    log.info(f"WorkerApi Job failed {job.getString()}", job.id)
+                else:
+                    job.status = "COMPLETED"
+                    log.info(f"WorkerApi Job completed {job.getString()}", job.id)
+
+                if job.webhook:
+                    thread = threading.Thread(
+                        target=_send_webhook,
+                        args=(job.webhook, job_output),
+                        daemon=True,
+                    )
+                    thread.start()
+            except Exception as e:
+                stack = traceback.format_exc()
+                log.error(f"WorkerApi Job failed {job.getString()}. error: {e}\nStacktrace:\n{stack}")
+                job.status = "FAILED"
+                job.error = str(e)
+
+    def stop(self):
+        """Stops the background job runner thread."""
+        self._stop_event.set()
+        self._job_runner_thread.join()
 
     def start_uvicorn(self, api_host="localhost", api_port=8000, api_concurrency=1):
         """
@@ -289,7 +371,7 @@ class WorkerAPI:
         job_list.add(job.id)
 
         # Process the job using the provided handler, passing in the job input.
-        job_results = await run_job(self.config["handler"], job.__dict__)
+        job_results = await run_job(self.config["handler"], job.getDictCopy())
 
         job_list.remove(job.id)
 
@@ -301,29 +383,26 @@ class WorkerAPI:
     # ---------------------------------------------------------------------------- #
 
     # ------------------------------------ run ----------------------------------- #
-    async def _sim_run(self, job_request: DefaultRequest) -> JobOutput:
-        """Development endpoint to simulate run behavior."""
+    async def _sim_run(self, job_request: DefaultRequest):
         assigned_job_id = f"test-{uuid.uuid4()}"
-        job_list.add({
-            "id": assigned_job_id,
-            "input": job_request.input,
-            "webhook": job_request.webhook
-        })
-        return jsonable_encoder({"id": assigned_job_id, "status": "IN_PROGRESS"})
+        job = Job(id=assigned_job_id, input=job_request.input, webhook=job_request.webhook, status="QUEUED")
+        job_list.add(job)
+        response = self._build_status_response(job)
+        return jsonable_encoder(response)
 
     # ---------------------------------- runsync --------------------------------- #
-    async def _sim_runsync(self, job_request: DefaultRequest) -> JobOutput:
+    async def _sim_runsync(self, job_request: DefaultRequest):
         """Development endpoint to simulate runsync behavior."""
         assigned_job_id = f"test-{uuid.uuid4()}"
-        job = TestJob(id=assigned_job_id, input=job_request.input)
+        job = Job(id=assigned_job_id, input=job_request.input)
 
         if is_generator(self.config["handler"]):
-            generator_output = run_job_generator(self.config["handler"], job.__dict__)
+            generator_output = run_job_generator(self.config["handler"], job.getDictCopy())
             job_output = {"output": []}
             async for stream_output in generator_output:
                 job_output["output"].append(stream_output["output"])
         else:
-            job_output = await run_job(self.config["handler"], job.__dict__)
+            job_output = await run_job(self.config["handler"], job.getDictCopy())
 
         if job_output.get("error", None):
             return jsonable_encoder(
@@ -351,10 +430,10 @@ class WorkerAPI:
                 {"id": job_id, "status": "FAILED", "error": "Job ID not found"}
             )
 
-        job = TestJob(id=job_id, input=stashed_job.input)
+        job = Job(id=job_id, input=stashed_job.input)
 
         if is_generator(self.config["handler"]):
-            generator_output = run_job_generator(self.config["handler"], job.__dict__)
+            generator_output = run_job_generator(self.config["handler"], job.getDictCopy())
             stream_accumulator = []
             async for stream_output in generator_output:
                 stream_accumulator.append({"output": stream_output["output"]})
@@ -382,7 +461,28 @@ class WorkerAPI:
         )
 
     # ---------------------------------- status ---------------------------------- #
-    async def _sim_status(self, job_id: str) -> JobOutput:
+    def _build_status_response(self, job) -> dict:
+        """Builds a status response dictionary from a Job object."""
+        response = job.getDictCopy(includeNone=False)
+
+        # Remove 'input' from the response if present
+        response.pop("input", None)
+
+        # Calculate delayTime if possible
+        started_time = response.get("started_time")
+        created_time = response.get("created_time")
+        if started_time is not None and created_time is not None:
+            response["delayTime"] = started_time - created_time
+
+        # Calculate executionTime if possible
+        completed_time = response.get("completed_time")
+        if completed_time is not None and started_time is not None:
+            response["executionTime"] = completed_time - started_time
+
+        log.debug(f"Status response: {response}", job.id)
+        return response
+
+    async def _sim_status(self, job_id: str):
         """Development endpoint to simulate status behavior."""
         stashed_job = job_list.get(job_id)
         if stashed_job is None:
@@ -390,31 +490,7 @@ class WorkerAPI:
                 {"id": job_id, "status": "FAILED", "error": "Job ID not found"}
             )
 
-        job = TestJob(id=stashed_job.id, input=stashed_job.input)
-
-        if is_generator(self.config["handler"]):
-            generator_output = run_job_generator(self.config["handler"], job.__dict__)
-            job_output = {"output": []}
-            async for stream_output in generator_output:
-                job_output["output"].append(stream_output["output"])
-        else:
-            job_output = await run_job(self.config["handler"], job.__dict__)
-
-        job_list.remove(job.id)
-
-        if job_output.get("error", None):
-            return jsonable_encoder(
-                {"id": job_id, "status": "FAILED", "error": job_output["error"]}
-            )
-
-        if stashed_job.webhook:
-            thread = threading.Thread(
-                target=_send_webhook,
-                args=(stashed_job.webhook, job_output),
-                daemon=True,
-            )
-            thread.start()
-
-        return jsonable_encoder(
-            {"id": job_id, "status": "COMPLETED", "output": job_output["output"]}
-        )
+        response = self._build_status_response(stashed_job)
+        returnedResponse = jsonable_encoder(response)
+        log.debug(f"Returned Status response: {returnedResponse}", job_id)
+        return returnedResponse
