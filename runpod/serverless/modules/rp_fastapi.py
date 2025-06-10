@@ -471,8 +471,13 @@ class WorkerAPI:
         # Calculate delayTime if possible
         started_time = response.get("started_time")
         created_time = response.get("created_time")
+        current_time = time.time()
+        response["currentTime"] = current_time
         if started_time is not None and created_time is not None:
             response["delayTime"] = started_time - created_time
+
+        if started_time is not None and current_time is not None:
+            response["timeSoFar"] = current_time - started_time
 
         # Calculate executionTime if possible
         completed_time = response.get("completed_time")
