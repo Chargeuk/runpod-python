@@ -291,7 +291,7 @@ class WorkerAPI:
             # response_model_exclude_none=True,
             summary="Returns information about the api system status.",
             description=API_STATUS_DESCRIPTION,
-            tags=["Submit Job Requests"],
+            tags=["Api Information"],
         )
 
         # Include the APIRouter in the FastAPI application.
