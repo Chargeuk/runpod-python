@@ -99,6 +99,19 @@ This endpoint is invaluable for monitoring the progress of a job and obtaining t
 **Note:** The availability of the `output` field is contingent on the job's completion status. If the job is still in progress, this field may be omitted or contain partial results, depending on the implementation.
 """
 
+API_STATUS_DESCRIPTION = """
+Returns the current status of the API system, including information about the worker's CUDA support, job queue, and system health.
+
+**Returns:**
+- **cuda_available** (boolean): Is cuda available on the worker?
+- **cuda_version** (string): The version of CUDA available on the worker.
+- **job_queue_length** (int): The number of jobs currently in the queue.
+- **system_health** (string): The health status of the system, indicating whether it is operational or experiencing issues.
+- **pytorch_version** (string): The version of PyTorch installed on the worker.
+- **pytorch_audio_version** (string): The version of PyTorch Audio installed on the worker.
+- **pytorch_vision_version** (string): The version of PyTorch Vision installed on the worker.
+"""
+
 
 # ------------------------------ Initializations ----------------------------- #
 job_list = JobsProgress()
@@ -270,6 +283,15 @@ class WorkerAPI:
             summary="Mimics the behavior of the status endpoint.",
             description=STATUS_DESCRIPTION,
             tags=["Check Job Results"],
+        )
+        api_router.add_api_route(
+            "/apistatus",
+            self._sim_api_status,
+            methods=["POST"],
+            # response_model_exclude_none=True,
+            summary="Returns information about the api system status.",
+            description=API_STATUS_DESCRIPTION,
+            tags=["Submit Job Requests"],
         )
 
         # Include the APIRouter in the FastAPI application.
@@ -499,3 +521,51 @@ class WorkerAPI:
         returnedResponse = jsonable_encoder(response)
         log.debug(f"Returned Status response: {returnedResponse}", job_id)
         return returnedResponse
+    
+
+    # --------------------------------- apistatus -------------------------------- #
+    async def _sim_api_status(self):
+        """
+        Returns the current status of the API system, including information about the worker's CUDA support, job queue, and system health.
+        """
+        # Set initial defaults
+        cuda_available = False
+        cuda_version = "N/A"
+        pytorch_version = "N/A"
+        pytorch_audio_version = "N/A"
+        pytorch_vision_version = "N/A"
+
+        # Try to get torch and related versions and CUDA info
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+            cuda_version = torch.version.cuda if cuda_available else "N/A"
+            pytorch_version = torch.__version__
+        except Exception as e:
+            log.warning(f"Could not get torch or CUDA info: {e}")
+
+        try:
+            import torchaudio as torch_audio
+            pytorch_audio_version = torch_audio.__version__
+        except Exception as e:
+            log.info(f"torchaudio not available: {e}")
+
+        try:
+            import torchvision as torch_vision
+            pytorch_vision_version = torch_vision.__version__
+        except Exception as e:
+            log.info(f"torchvision not available: {e}")
+
+        job_queue_length = len(job_list.jobs)
+        system_health = "Operational"
+        response = {
+            "cuda_available": cuda_available,
+            "cuda_version": cuda_version,
+            "job_queue_length": job_queue_length,
+            "system_health": system_health,
+            "pytorch_version": pytorch_version,
+            "pytorch_audio_version": pytorch_audio_version,
+            "pytorch_vision_version": pytorch_vision_version,
+        }
+        log.info(f"API Status response: {response}")
+        return jsonable_encoder(response)
