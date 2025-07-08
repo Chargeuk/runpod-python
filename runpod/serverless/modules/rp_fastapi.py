@@ -113,6 +113,8 @@ Returns the current status of the API system, including information about the wo
 - **pytorch_vision_version** (string): The version of PyTorch Vision installed on the worker.
 - **nvidia_smi_output** (string): The output of the `nvidia-smi --version` command, providing details about the GPU status.
 - **nvidia_smi_gpu** (string): The GPU model and status as reported by `nvidia-smi -L`.
+- **ollama_status** (string): The status of the Ollama service, indicating whether it is running or not.
+- **comfyui_status** (string): The status of the ComfyUI service, indicating whether it is running or not.
 """
 
 
@@ -539,6 +541,8 @@ class WorkerAPI:
         pytorch_vision_version = "N/A"
         nvidia_smi_output = "N/A"
         nvidia_smi_gpu = "N/A"
+        ollama_status = "N/A"
+        comfyui_status = "N/A"
         job_queue_length = 0
         isRunning = True
         # Try to get torch and related versions and CUDA info
@@ -605,6 +609,82 @@ class WorkerAPI:
             log.info(f"Unable to get job queue length: {e}")
             isRunning = False
 
+        # Check if Ollama service is running
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "ollama serve"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False  # Don't raise exception on non-zero exit
+            )
+            if result.returncode == 0:
+                ollama_status = "Running"
+            else:
+                ollama_status = "Not Running"
+        except FileNotFoundError:
+            # pgrep command not found (likely on Windows)
+            try:
+                # Alternative check for Windows using tasklist
+                result = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq ollama.exe"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False
+                )
+                if "ollama.exe" in result.stdout:
+                    ollama_status = "Running"
+                else:
+                    ollama_status = "Not Running"
+            except Exception as e:
+                log.info(f"Unable to check Ollama status: {e}")
+                ollama_status = "Unknown"
+        except Exception as e:
+            log.info(f"Unable to check Ollama status: {e}")
+            ollama_status = "Unknown"
+
+        # Check if ComfyUI service is running
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "python.*main.py.*--port.*3000"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False  # Don't raise exception on non-zero exit
+            )
+            if result.returncode == 0:
+                comfyui_status = "Running"
+            else:
+                comfyui_status = "Not Running"
+        except FileNotFoundError:
+            # pgrep command not found (likely on Windows)
+            try:
+                # Alternative check for Windows using tasklist and findstr
+                result = subprocess.run(
+                    ["tasklist", "/V"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False
+                )
+                # Check if any python process has main.py and port 3000 in command line
+                if "python" in result.stdout and "main.py" in result.stdout and "3000" in result.stdout:
+                    comfyui_status = "Running"
+                else:
+                    comfyui_status = "Not Running"
+            except Exception as e:
+                log.info(f"Unable to check ComfyUI status: {e}")
+                comfyui_status = "Unknown"
+        except Exception as e:
+            log.info(f"Unable to check ComfyUI status: {e}")
+            comfyui_status = "Unknown"
+
+        if ollama_status != "Running":
+            isRunning = False
+        if comfyui_status != "Running":
+            isRunning = False
+
         system_health = "Operational" if isRunning else "Degraded"
         response = {
             "cuda_available": cuda_available,
@@ -616,6 +696,8 @@ class WorkerAPI:
             "pytorch_vision_version": pytorch_vision_version,
             "nvidia_smi_output": nvidia_smi_output,
             "nvidia_smi_gpu": nvidia_smi_gpu,
+            "ollama_status": ollama_status,
+            "comfyui_status": comfyui_status,
         }
         log.info(f"API Status response: {response}")
         return jsonable_encoder(response)
