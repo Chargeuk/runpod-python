@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 import signal
 import traceback
+import subprocess
 
 import requests
 import uvicorn
@@ -110,6 +111,8 @@ Returns the current status of the API system, including information about the wo
 - **pytorch_version** (string): The version of PyTorch installed on the worker.
 - **pytorch_audio_version** (string): The version of PyTorch Audio installed on the worker.
 - **pytorch_vision_version** (string): The version of PyTorch Vision installed on the worker.
+- **nvidia_smi_output** (string): The output of the `nvidia-smi --version` command, providing details about the GPU status.
+- **nvidia_smi_gpu** (string): The GPU model and status as reported by `nvidia-smi -L`.
 """
 
 
@@ -534,7 +537,10 @@ class WorkerAPI:
         pytorch_version = "N/A"
         pytorch_audio_version = "N/A"
         pytorch_vision_version = "N/A"
-
+        nvidia_smi_output = "N/A"
+        nvidia_smi_gpu = "N/A"
+        job_queue_length = 0
+        isRunning = True
         # Try to get torch and related versions and CUDA info
         try:
             import torch
@@ -543,21 +549,63 @@ class WorkerAPI:
             pytorch_version = torch.__version__
         except Exception as e:
             log.warning(f"Could not get torch or CUDA info: {e}")
+            isRunning = False
 
         try:
             import torchaudio as torch_audio
             pytorch_audio_version = torch_audio.__version__
         except Exception as e:
             log.info(f"torchaudio not available: {e}")
+            isRunning = False
 
         try:
             import torchvision as torch_vision
             pytorch_vision_version = torch_vision.__version__
         except Exception as e:
             log.info(f"torchvision not available: {e}")
+            isRunning = False
 
-        job_queue_length = len(job_list.jobs)
-        system_health = "Operational"
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            nvidia_smi_output = result.stdout
+            log.info(nvidia_smi_output)
+        except subprocess.CalledProcessError as e:
+            log.info("nvidia-smi failed:", e.stderr)
+            isRunning = False
+        except FileNotFoundError:
+            log.info("nvidia-smi command not found (NVIDIA drivers may not be installed)")
+            isRunning = False
+
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "-L"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            nvidia_smi_gpu = result.stdout
+            log.info(nvidia_smi_gpu)
+        except subprocess.CalledProcessError as e:
+            log.info("nvidia-smi failed:", e.stderr)
+            isRunning = False
+        except FileNotFoundError:
+            log.info("nvidia-smi command not found (NVIDIA drivers may not be installed)")
+            isRunning = False
+
+        try:
+            job_queue_length = job_list.get_job_count()
+        except Exception as e:
+            log.info(f"Unable to get job queue length: {e}")
+            isRunning = False
+
+        system_health = "Operational" if isRunning else "Degraded"
         response = {
             "cuda_available": cuda_available,
             "cuda_version": cuda_version,
@@ -566,6 +614,8 @@ class WorkerAPI:
             "pytorch_version": pytorch_version,
             "pytorch_audio_version": pytorch_audio_version,
             "pytorch_vision_version": pytorch_vision_version,
+            "nvidia_smi_output": nvidia_smi_output,
+            "nvidia_smi_gpu": nvidia_smi_gpu,
         }
         log.info(f"API Status response: {response}")
         return jsonable_encoder(response)
