@@ -772,4 +772,5 @@ class WorkerAPI:
             "comfyui_status": comfyui_status,
         }
         log.info(f"API Status response: {response}")
+        print(f"API Status response: {response}")
         return jsonable_encoder(response)
