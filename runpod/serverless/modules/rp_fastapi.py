@@ -105,6 +105,7 @@ Returns the current status of the API system, including information about the wo
 
 **Returns:**
 - **cuda_available** (boolean): Is cuda available on the worker?
+- **cuda_functional** (boolean): Can CUDA actually perform computations successfully?
 - **cuda_version** (string): The version of CUDA available on the worker.
 - **job_queue_length** (int): The number of jobs currently in the queue.
 - **system_health** (string): The health status of the system, indicating whether it is operational or experiencing issues.
@@ -535,6 +536,7 @@ class WorkerAPI:
         """
         # Set initial defaults
         cuda_available = False
+        cuda_functional = False
         cuda_version = "N/A"
         pytorch_version = "N/A"
         pytorch_audio_version = "N/A"
@@ -551,6 +553,20 @@ class WorkerAPI:
             cuda_available = torch.cuda.is_available()
             cuda_version = torch.version.cuda if cuda_available else "N/A"
             pytorch_version = torch.__version__
+            
+            # Test actual CUDA functionality
+            if cuda_available:
+                try:
+                    # Create a small tensor on GPU and perform a simple operation
+                    test_tensor = torch.randn(10, 10, device='cuda')
+                    result = torch.matmul(test_tensor, test_tensor.T)
+                    # Synchronize to ensure operation completed successfully
+                    torch.cuda.synchronize()
+                    cuda_functional = True
+                except Exception as cuda_test_error:
+                    log.warning(f"CUDA functional test failed: {cuda_test_error}")
+                    cuda_functional = False
+                    isRunning = False
         except Exception as e:
             log.warning(f"Could not get torch or CUDA info: {e}")
             isRunning = False
@@ -688,6 +704,7 @@ class WorkerAPI:
         system_health = "Operational" if isRunning else "Degraded"
         response = {
             "cuda_available": cuda_available,
+            "cuda_functional": cuda_functional,
             "cuda_version": cuda_version,
             "job_queue_length": job_queue_length,
             "system_health": system_health,
