@@ -257,6 +257,9 @@ class WorkerAPI:
             openapi_tags=tags_metadata,
         )
 
+         # log the API status on startup
+        self._sim_api_status()
+
         # Create an APIRouter and add the route for processing jobs.
         api_router = APIRouter()
 
@@ -327,9 +330,6 @@ class WorkerAPI:
             daemon=True
         )
         self._job_runner_thread.start()
-
-        # log the API status on startup
-        self._sim_api_status()
 
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self.stop)
