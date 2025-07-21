@@ -756,6 +756,7 @@ class WorkerAPI:
         response = {
             "cuda_available": cuda_available,
             "cuda_functional": cuda_functional,
+            "vram_threshold_gb": vram_threshold_gb,
             "vram_usage_gb": vram_usage_gb,
             "vram_total_gb": vram_total_gb,
             "vram_usage_percent": vram_usage_percent,
@@ -772,7 +773,6 @@ class WorkerAPI:
             "comfyui_status": comfyui_status,
         }
         log.info(f"API Status response: {response}")
-        print(f"API Status response: {response}")
         return jsonable_encoder(response)
 
     def _log_startup_status(self):
@@ -788,6 +788,5 @@ class WorkerAPI:
             
             # Run the async method
             status_response = loop.run_until_complete(self._sim_api_status())
-            log.info(f"API startup status check completed: {status_response}")
         except Exception as e:
             log.error(f"Failed to get API status during startup: {e}")
