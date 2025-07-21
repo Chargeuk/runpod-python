@@ -103,9 +103,16 @@ This endpoint is invaluable for monitoring the progress of a job and obtaining t
 API_STATUS_DESCRIPTION = """
 Returns the current status of the API system, including information about the worker's CUDA support, job queue, and system health.
 
+**Parameters:**
+- **vram_threshold_gb** (float, optional): Override the VRAM usage threshold in GB. If not provided, uses the RUNPOD_VRAM_THRESHOLD_GB environment variable (default: 12.0).
+
 **Returns:**
 - **cuda_available** (boolean): Is cuda available on the worker?
 - **cuda_functional** (boolean): Can CUDA actually perform computations successfully?
+- **vram_usage_gb** (float): Current VRAM usage in gigabytes.
+- **vram_total_gb** (float): Total VRAM available in gigabytes.
+- **vram_usage_percent** (float): Current VRAM usage as a percentage of total VRAM.
+- **vram_check_passed** (boolean): Whether VRAM usage is below the configured threshold.
 - **cuda_version** (string): The version of CUDA available on the worker.
 - **job_queue_length** (int): The number of jobs currently in the queue.
 - **system_health** (string): The health status of the system, indicating whether it is operational or experiencing issues.
@@ -116,6 +123,9 @@ Returns the current status of the API system, including information about the wo
 - **nvidia_smi_gpu** (string): The GPU model and status as reported by `nvidia-smi -L`.
 - **ollama_status** (string): The status of the Ollama service, indicating whether it is running or not.
 - **comfyui_status** (string): The status of the ComfyUI service, indicating whether it is running or not.
+
+**Environment Variables:**
+- **RUNPOD_VRAM_THRESHOLD_GB**: Sets the VRAM usage threshold in GB (default: 12.0). If VRAM usage exceeds this threshold, the vram_check_passed will be false and system_health will be "Degraded".
 """
 
 
@@ -153,6 +163,13 @@ class DefaultRequest:
 
     input: Dict[str, Any]
     webhook: Optional[str] = None
+
+
+@dataclass
+class ApiStatusRequest:
+    """Represents an API status request."""
+
+    vram_threshold_gb: Optional[float] = None
 
 
 # ------------------------------ Output Objects ------------------------------ #
@@ -530,13 +547,19 @@ class WorkerAPI:
     
 
     # --------------------------------- apistatus -------------------------------- #
-    async def _sim_api_status(self):
+    async def _sim_api_status(self, request: Optional[ApiStatusRequest] = None):
         """
         Returns the current status of the API system, including information about the worker's CUDA support, job queue, and system health.
         """
+        # Extract vram_threshold_gb from request if provided
+        vram_threshold_gb = request.vram_threshold_gb if request else None
         # Set initial defaults
         cuda_available = False
         cuda_functional = False
+        vram_usage_gb = 0.0
+        vram_total_gb = 0.0
+        vram_usage_percent = 0.0
+        vram_check_passed = True
         cuda_version = "N/A"
         pytorch_version = "N/A"
         pytorch_audio_version = "N/A"
@@ -547,6 +570,10 @@ class WorkerAPI:
         comfyui_status = "N/A"
         job_queue_length = 0
         isRunning = True
+        
+        # VRAM usage threshold in GB (configurable via environment variable)
+        if vram_threshold_gb is None:
+            vram_threshold_gb = float(os.environ.get("RUNPOD_VRAM_THRESHOLD_GB", "3.0"))
         # Try to get torch and related versions and CUDA info
         try:
             import torch
@@ -563,6 +590,27 @@ class WorkerAPI:
                     # Synchronize to ensure operation completed successfully
                     torch.cuda.synchronize()
                     cuda_functional = True
+                    
+                    # Check VRAM usage
+                    try:
+                        vram_total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                        vram_allocated_gb = torch.cuda.memory_allocated(0) / (1024**3)
+                        vram_reserved_gb = torch.cuda.memory_reserved(0) / (1024**3)
+                        vram_usage_gb = max(vram_allocated_gb, vram_reserved_gb)
+                        vram_usage_percent = (vram_usage_gb / vram_total_gb) * 100 if vram_total_gb > 0 else 0
+                        
+                        if vram_usage_gb > vram_threshold_gb:
+                            vram_check_passed = False
+                            log.warning(f"VRAM usage check failed: {vram_usage_gb:.2f}GB used > {vram_threshold_gb}GB threshold")
+                            isRunning = False
+                        else:
+                            log.info(f"VRAM usage check passed: {vram_usage_gb:.2f}GB used <= {vram_threshold_gb}GB threshold")
+                            
+                    except Exception as vram_error:
+                        log.warning(f"VRAM usage check failed: {vram_error}")
+                        vram_check_passed = False
+                        isRunning = False
+                        
                 except Exception as cuda_test_error:
                     log.warning(f"CUDA functional test failed: {cuda_test_error}")
                     cuda_functional = False
@@ -705,6 +753,10 @@ class WorkerAPI:
         response = {
             "cuda_available": cuda_available,
             "cuda_functional": cuda_functional,
+            "vram_usage_gb": vram_usage_gb,
+            "vram_total_gb": vram_total_gb,
+            "vram_usage_percent": vram_usage_percent,
+            "vram_check_passed": vram_check_passed,
             "cuda_version": cuda_version,
             "job_queue_length": job_queue_length,
             "system_health": system_health,
