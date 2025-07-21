@@ -257,8 +257,8 @@ class WorkerAPI:
             openapi_tags=tags_metadata,
         )
 
-         # log the API status on startup
-        self._sim_api_status()
+        # Log the API status on startup - run synchronously
+        self._log_startup_status()
 
         # Create an APIRouter and add the route for processing jobs.
         api_router = APIRouter()
@@ -774,3 +774,20 @@ class WorkerAPI:
         log.info(f"API Status response: {response}")
         print(f"API Status response: {response}")
         return jsonable_encoder(response)
+
+    def _log_startup_status(self):
+        """Logs API status information during startup (synchronous version)."""
+        try:
+            # Create a new event loop for this thread if needed
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Run the async method
+            status_response = loop.run_until_complete(self._sim_api_status())
+            log.info(f"API startup status check completed: {status_response}")
+        except Exception as e:
+            log.error(f"Failed to get API status during startup: {e}")
