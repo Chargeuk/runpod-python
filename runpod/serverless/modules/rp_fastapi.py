@@ -328,6 +328,9 @@ class WorkerAPI:
         )
         self._job_runner_thread.start()
 
+        # log the API status on startup
+        self._sim_api_status()
+
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self.stop)
         signal.signal(signal.SIGINT, self.stop)
