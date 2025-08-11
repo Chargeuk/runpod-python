@@ -558,7 +558,8 @@ class WorkerAPI:
         vram_threshold_gb = request.vram_threshold_gb if request else None
         # Set initial defaults
         cuda_available = False
-        cuda_functional = False
+        cuda_mult_functional = False
+        cuda_nn_functional = False
         vram_usage_gb = 0.0
         vram_total_gb = 0.0
         vram_usage_percent = 0.0
@@ -588,12 +589,32 @@ class WorkerAPI:
             if cuda_available:
                 try:
                     # Create a small tensor on GPU and perform a simple operation
-                    test_tensor = torch.randn(10, 10, device='cuda')
-                    result = torch.matmul(test_tensor, test_tensor.T)
+                    test_tensor = torch.randn(1000, 1000, device='cuda')
+                    test_tensor2 = torch.randn(1000, 1000, device='cuda')
+                    result = torch.matmul(test_tensor, test_tensor2)
                     # Synchronize to ensure operation completed successfully
                     torch.cuda.synchronize()
-                    cuda_functional = True
+                    cuda_mult_functional = True
                     
+                    # Clean up multiplication test tensors
+                    del test_tensor, test_tensor2, result
+                    
+                    model = torch.nn.Linear(10, 5).cuda()
+                    x = torch.randn(4, 10, device="cuda")
+                    y = torch.randn(4, 5, device="cuda")
+                    loss = torch.nn.functional.mse_loss(model(x), y)
+                    loss.backward()
+                    torch.cuda.synchronize()
+                    cuda_nn_functional = True
+                    
+                    # Clean up neural network test objects
+                    del model, x, y, loss
+                    
+                    # Force garbage collection and clear CUDA cache
+                    import gc
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
                     # Check VRAM usage
                     try:
                         vram_total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
@@ -616,7 +637,6 @@ class WorkerAPI:
                         
                 except Exception as cuda_test_error:
                     log.warning(f"CUDA functional test failed: {cuda_test_error}")
-                    cuda_functional = False
                     isRunning = False
         except Exception as e:
             log.warning(f"Could not get torch or CUDA info: {e}")
@@ -755,7 +775,8 @@ class WorkerAPI:
         system_health = "Operational" if isRunning else "Degraded"
         response = {
             "cuda_available": cuda_available,
-            "cuda_functional": cuda_functional,
+            "cuda_mult_functional": cuda_mult_functional,
+            "cuda_nn_functional": cuda_nn_functional,
             "vram_threshold_gb": vram_threshold_gb,
             "vram_usage_gb": vram_usage_gb,
             "vram_total_gb": vram_total_gb,
