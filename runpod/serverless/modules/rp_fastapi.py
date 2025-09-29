@@ -353,17 +353,28 @@ class WorkerAPI:
 
                     def run_async_generator(gen):
                         results = []
+                        error_encountered = None
                         async def consume():
+                            nonlocal error_encountered
                             async for stream_output in gen:
-                                results.append(stream_output["output"])
+                                # Check if this is an error output
+                                if stream_output.get("status") == "error":
+                                    error_encountered = stream_output.get("error", "Unknown error")
+                                    break
+                                # Only append if there's an output key
+                                if "output" in stream_output:
+                                    results.append(stream_output["output"])
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         loop.run_until_complete(consume())
                         loop.close()
-                        return results
+                        
+                        if error_encountered:
+                            return {"error": error_encountered}
+                        return {"output": results}
 
-                    generator_output = run_job_generator(self.config["handler"], job.getDictCopy())
-                    job_output = {"output": run_async_generator(generator_output)}
+                    generator_result = run_async_generator(run_job_generator(self.config["handler"], job.getDictCopy()))
+                    job_output = generator_result
                 else:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
