@@ -356,14 +356,20 @@ class WorkerAPI:
                         error_info = {"error": None}  # Using a dict instead
                         async def consume():
                             async for stream_output in gen:
-                                # Check if this is an error output
-                                if stream_output.get("status") == "error":
-                                    error_info["error"] = stream_output.get("error", "Unknown error")
-                                    log.info(f"Error encountered in job {job.id}: {error_info["error"]}")
+                                try:
+                                    # Check if this is an error output
+                                    if stream_output.get("status") == "error":
+                                        error_info["error"] = stream_output.get("error", "Unknown error")
+                                        log.info(f"Error encountered in job {job.id}: {error_info['error']}")
+                                        break
+                                    # Only append if there's an output key
+                                    if "output" in stream_output:
+                                        results.append(stream_output["output"])
+                                except Exception as e:
+                                    log.error(f"Error caught while consuming generator: {e}", job.id)
+                                    error_info["error"] = str(e)
                                     break
-                                # Only append if there's an output key
-                                if "output" in stream_output:
-                                    results.append(stream_output["output"])
+
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         loop.run_until_complete(consume())

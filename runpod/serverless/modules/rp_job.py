@@ -255,7 +255,7 @@ async def run_job_generator(
                 yield {"output": output_partial}
 
     except Exception as err:
-        log.error(err, job["id"])
-        yield {"error": f"handler: {str(err)} \ntraceback: {traceback.format_exc()}"}
+        log.error(f"Error caught while running generator: {str(err)}", job["id"])
+        yield {"status": "error", "error": f"handler: {str(err)} \ntraceback: {traceback.format_exc()}"}
     finally:
         log.info("Finished running generator.", job["id"])
