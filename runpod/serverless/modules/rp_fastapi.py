@@ -353,13 +353,13 @@ class WorkerAPI:
 
                     def run_async_generator(gen):
                         results = []
-                        error_encountered = None
+                        error_info = {"error": None}  # Using a dict instead
                         async def consume():
-                            nonlocal error_encountered
                             async for stream_output in gen:
                                 # Check if this is an error output
                                 if stream_output.get("status") == "error":
-                                    error_encountered = stream_output.get("error", "Unknown error")
+                                    error_info["error"] = stream_output.get("error", "Unknown error")
+                                    log.info(f"Error encountered in job {job.id}: {error_info["error"]}")
                                     break
                                 # Only append if there's an output key
                                 if "output" in stream_output:
@@ -368,9 +368,11 @@ class WorkerAPI:
                         asyncio.set_event_loop(loop)
                         loop.run_until_complete(consume())
                         loop.close()
-                        
-                        if error_encountered:
-                            return {"error": error_encountered}
+
+                        if error_info["error"]:
+                            log.info(f"WorkerApi Job failed {job.getString()} so returning error")
+                            return {"error": error_info["error"]}
+                        log.info(f"WorkerApi Job completed successfully, returning results {job.getString()}")
                         return {"output": results}
 
                     generator_result = run_async_generator(run_job_generator(self.config["handler"], job.getDictCopy()))
